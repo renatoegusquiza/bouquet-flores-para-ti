@@ -1,0 +1,610 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Bouquet para ti</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: un solo lienzo a pantalla completa hecho de celdas de texto; el ramo gira al centro y el mensaje queda en la fila de abajo. */
+  :root {
+    --bg: #0d0912;
+    --fg: #f3d9e4;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  canvas:active { cursor: grabbing; }
+</style>
+
+<div id="stage">
+  <canvas id="c" role="img" aria-label="Un ramo de flores que gira, con corazones que suben y el mensaje: para Alondra"></canvas>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- Mersenne Twister compatible con random.Random(seed) de Python ----------
+   Así las flores, hojas, estrellitas y destellos quedan exactamente en el mismo
+   lugar que en bouquet3d.py. */
+class PyRandom {
+  constructor(seed) {
+    this.mt = new Uint32Array(624);
+    this.idx = 624;
+    this._initByArray([seed >>> 0]);
+  }
+  _initGenrand(s) {
+    const mt = this.mt;
+    mt[0] = s >>> 0;
+    for (let i = 1; i < 624; i++) {
+      const p = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = (Math.imul(1812433253, p) + i) >>> 0;
+    }
+    this.idx = 624;
+  }
+  _initByArray(key) {
+    const mt = this.mt;
+    this._initGenrand(19650218);
+    let i = 1, j = 0;
+    for (let k = Math.max(624, key.length); k > 0; k--) {
+      const p = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = ((mt[i] ^ Math.imul(p, 1664525)) >>> 0) + key[j] + j;
+      i++; j++;
+      if (i >= 624) { mt[0] = mt[623]; i = 1; }
+      if (j >= key.length) j = 0;
+    }
+    for (let k = 623; k > 0; k--) {
+      const p = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = ((mt[i] ^ Math.imul(p, 1566083941)) >>> 0) - i;
+      i++;
+      if (i >= 624) { mt[0] = mt[623]; i = 1; }
+    }
+    mt[0] = 0x80000000;
+    this.idx = 624;
+  }
+  _next() {
+    const mt = this.mt;
+    if (this.idx >= 624) {
+      let kk = 0, z;
+      for (; kk < 227; kk++) {
+        z = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk + 397] ^ (z >>> 1) ^ ((z & 1) ? 0x9908b0df : 0);
+      }
+      for (; kk < 623; kk++) {
+        z = (mt[kk] & 0x80000000) | (mt[kk + 1] & 0x7fffffff);
+        mt[kk] = mt[kk - 227] ^ (z >>> 1) ^ ((z & 1) ? 0x9908b0df : 0);
+      }
+      z = (mt[623] & 0x80000000) | (mt[0] & 0x7fffffff);
+      mt[623] = mt[396] ^ (z >>> 1) ^ ((z & 1) ? 0x9908b0df : 0);
+      this.idx = 0;
+    }
+    let y = mt[this.idx++];
+    y ^= y >>> 11;
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= y >>> 18;
+    return y >>> 0;
+  }
+  random() {
+    const a = this._next() >>> 5, b = this._next() >>> 6;
+    return (a * 67108864.0 + b) / 9007199254740992.0;
+  }
+  uniform(a, b) {
+    return a + (b - a) * this.random();
+  }
+}
+
+/* ---------- Configuración (igual que el script) ---------- */
+const SPIN_SPEED = 0.6;
+const TILT = 0.30;
+const CAM_DIST = 4.0;
+const MESSAGE = "para Alondra ♥";
+const HINT = "Si logras ver esto, te amo y te extraño";
+const NUM_HEARTS = 18;
+const PIVOT_Y = 0.2;
+
+const WHITE = [244, 248, 251, 254, 255, 231];
+const PINK = [125, 162, 168, 205, 211, 218, 225];
+const RED = [52, 88, 124, 160, 196, 203];
+const PURPLE = [54, 91, 97, 134, 140, 183];
+const YELLOW = [136, 178, 214, 220, 226, 229];
+const ORANGE = [130, 166, 202, 208, 214, 216];
+const GOLD_CENTER = [94, 136, 178, 214, 220];
+const DARK_CENTER = [52, 58, 94, 130, 136];
+const GREENS = [22, 28, 28, 34, 35, 71, 77, 114];
+const PAPER = [101, 144, 187, 223, 230, 231];
+const RIBBON = [88, 125, 161, 197, 204, 211];
+const HEART_COLORS = [161, 197, 204, 205, 211, 218];
+const MSG_COLORS = [161, 168, 205, 211, 218, 225, 218, 211, 205, 168];
+const SHADE = ".:-=+*%@";
+const PETAL_SHADE = "+*#%";
+
+const _Ln = Math.sqrt(0.45 * 0.45 + 0.6 * 0.6 + 0.66 * 0.66);
+const LX = -0.45 / _Ln, LY = 0.6 / _Ln, LZ = 0.66 / _Ln;
+
+const DISC_TYPES = [
+  [WHITE, GOLD_CENTER, 13],
+  [PINK, GOLD_CENTER, 8],
+  [RED, DARK_CENTER, 6],
+  [PURPLE, GOLD_CENTER, 7],
+  [YELLOW, DARK_CENTER, 12],
+  [ORANGE, DARK_CENTER, 9],
+];
+const TULIP_COLORS = [RED, PINK, YELLOW];
+
+/* Paleta xterm de 256 colores -> RGB */
+function xterm(n) {
+  if (n >= 232) { const v = 8 + 10 * (n - 232); return [v, v, v]; }
+  if (n >= 16) {
+    n -= 16;
+    const L = [0, 95, 135, 175, 215, 255];
+    return [L[Math.floor(n / 36)], L[Math.floor(n / 6) % 6], L[n % 6]];
+  }
+  const base = [[0,0,0],[128,0,0],[0,128,0],[128,128,0],[0,0,128],[128,0,128],[0,128,128],[192,192,192],
+                [128,128,128],[255,0,0],[0,255,0],[255,255,0],[0,0,255],[255,0,255],[0,255,255],[255,255,255]];
+  return base[n];
+}
+
+/* ---------- Vectores ---------- */
+function norm(v) {
+  const m = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) || 1.0;
+  return [v[0] / m, v[1] / m, v[2] / m];
+}
+function cross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function add(p, d, k) {
+  return [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k];
+}
+
+/* ---------- Escena ---------- */
+function buildScene() {
+  const rnd = new PyRandom(21);
+  const pts = [];
+  const neck = [0.0, -0.12, 0.0];
+
+  const C = [0.0, 0.12, 0.0], D = 0.64;
+  const N = 10;
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const heads = [];
+  for (let i = 0; i < N; i++) {
+    const el = (88 - 60 * Math.sqrt(i / (N - 1))) * (Math.PI / 180);
+    const az = i * golden;
+    const d = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
+    const pos = add(C, d, D * rnd.uniform(0.92, 1.05));
+    heads.push([pos, norm(d)]);
+  }
+
+  const tulipSlots = new Set([3, 8]);
+  const flowers = [];
+  let discI = 0;
+  heads.forEach(([pos, axis], idx) => {
+    const base = add(pos, axis, -0.03);
+    for (let j = 0; j < 70; j++) {
+      const t = j / 69;
+      const p = [base[0] + (neck[0] - base[0]) * t, base[1] + (neck[1] - base[1]) * t,
+                 base[2] + (neck[2] - base[2]) * t];
+      pts.push([p[0], p[1], p[2], axis[0], 0.0, axis[2], GREENS, -0.15, true, null]);
+    }
+    if (tulipSlots.has(idx)) {
+      let nT = 0;
+      tulipSlots.forEach(k => { if (k < idx) nT++; });
+      flowers.push({ pos, kind: "tulip", pal: TULIP_COLORS[nT % TULIP_COLORS.length], cpal: null,
+                     nPet: 0, R: 0.11, seed: rnd.uniform(0, 6.28) });
+    } else {
+      const [petals, center, nPet] = DISC_TYPES[discI % DISC_TYPES.length];
+      discI++;
+      const R = rnd.uniform(0.12, 0.14);
+      const seed = rnd.uniform(0, 6.28);
+      flowers.push({ pos, kind: "disc", pal: petals, cpal: center, nPet, R, seed });
+    }
+  });
+
+  for (let i = 0; i < 8; i++) {
+    const a = (i + 0.4) / 8 * 2 * Math.PI;
+    const c = Math.cos(a), s = Math.sin(a);
+    const base = [0.26 * c, 0.30, 0.26 * s];
+    const d = norm([c, 0.15, s]);
+    const side = [-s, 0.0, c];
+    const n = norm(cross(side, d));
+    const L = 0.30, W = 0.07;
+    for (let ti = 0; ti < 32; ti++) {
+      const t = ti / 31;
+      for (let wi = -5; wi < 6; wi++) {
+        const w = wi / 5;
+        const curl = 0.025 * w * w;
+        const p = [base[0] + d[0] * L * t + side[0] * W * Math.sin(Math.PI * t) * w + n[0] * curl,
+                   base[1] + d[1] * L * t - 0.10 * t * t + n[1] * curl,
+                   base[2] + d[2] * L * t + side[2] * W * Math.sin(Math.PI * t) * w + n[2] * curl];
+        const rib = wi === 0 ? -0.25 : 0.0;
+        pts.push([p[0], p[1], p[2], n[0], n[1], n[2], GREENS, rib, true, null]);
+      }
+    }
+  }
+
+  const y0 = -0.20, y1 = 0.30, r0 = 0.06, r1 = 0.36;
+  const k = (r1 - r0) / (y1 - y0);
+  const rings = 50;
+  for (let i = 0; i < rings; i++) {
+    const t = i / (rings - 1);
+    const r = r0 + (r1 - r0) * t;
+    const count = Math.max(8, Math.trunc(170 * r));
+    for (let j = 0; j < count; j++) {
+      const ph = (j + rnd.random()) / count * 2 * Math.PI;
+      const c = Math.cos(ph), s = Math.sin(ph);
+      let y = y0 + (y1 - y0) * t;
+      if (t > 0.9) y += 0.03 * Math.sin(9 * ph);
+      const fold = 0.3 * (Math.abs(Math.sin(5 * ph)) - 0.6);
+      const nn = norm([c, -k, s]);
+      pts.push([r * c, y, r * s, nn[0], nn[1], nn[2], PAPER, fold, false, null]);
+    }
+  }
+
+  for (let i = 0; i < 7; i++) {
+    const a = i / 7 * 2 * Math.PI;
+    const sx = 0.025 * Math.cos(a), sz = 0.025 * Math.sin(a);
+    for (let j = 0; j < 40; j++) {
+      const t = j / 39;
+      pts.push([sx * (1 + 1.2 * t), -0.20 - 0.30 * t, sz * (1 + 1.2 * t),
+                Math.cos(a), 0.0, Math.sin(a), GREENS, -0.1, true, null]);
+    }
+  }
+
+  const by = -0.12;
+  const br = r0 + k * (by - y0) + 0.01;
+  for (let j = 0; j < 90; j++) {
+    const ph = j / 90 * 2 * Math.PI;
+    for (const dy of [-0.012, 0.0, 0.012]) {
+      pts.push([br * Math.cos(ph), by + dy, br * Math.sin(ph),
+                Math.cos(ph), 0.0, Math.sin(ph), RIBBON, 0.0, false, null]);
+    }
+  }
+  const knot = [0.0, by, br + 0.01];
+  for (const side of [-1, 1]) {
+    for (let j = 0; j < 70; j++) {
+      const a = j / 70 * 2 * Math.PI;
+      const lx = side * (0.07 + 0.07 * Math.cos(a));
+      const ly = 0.04 * Math.sin(a) + 0.02 * (0.07 + 0.07 * Math.cos(a)) / 0.14;
+      for (const fill of [1.0, 0.7]) {
+        pts.push([knot[0] + lx * fill, knot[1] + ly * fill, knot[2] + 0.01,
+                  side * 0.3, 0.2, 0.93, RIBBON, 0.1, true, null]);
+      }
+    }
+    for (let j = 0; j < 30; j++) {
+      const t = j / 29;
+      pts.push([knot[0] + side * 0.06 * t, knot[1] - 0.15 * t, knot[2] + 0.015,
+                side * 0.2, 0.0, 0.98, RIBBON, -0.05 + 0.05 * Math.sin(t * 9), true, null]);
+    }
+  }
+  for (const dx of [-0.01, 0.0, 0.01]) {
+    pts.push([dx, by, knot[2] + 0.02, 0, 0, 1, RIBBON, 0.2, true, "@"]);
+  }
+
+  const babies = [];
+  for (let i = 0; i < 90; i++) {
+    const a = rnd.random() * 2 * Math.PI;
+    const el = rnd.uniform(0.3, 1.4);
+    const rr = rnd.uniform(0.40, 0.58);
+    babies.push([rr * Math.cos(a) * Math.cos(el), C[1] + rr * Math.sin(el),
+                 rr * Math.sin(a) * Math.cos(el), rnd.uniform(0, 6.28)]);
+  }
+
+  const sparkles = [];
+  for (let i = 0; i < 30; i++) {
+    const a = rnd.random() * 2 * Math.PI;
+    const rr = rnd.uniform(0.75, 0.95);
+    const sx = rr * Math.cos(a);
+    const sy = rnd.uniform(-0.3, 1.0);
+    const sz = rr * Math.sin(a);
+    const ph = rnd.uniform(0, 6.28);
+    const sp = rnd.uniform(1.5, 4.0);
+    sparkles.push([sx, sy, sz, ph, sp]);
+  }
+
+  return { pts, flowers, babies, sparkles };
+}
+
+function updateHearts(hearts, dt) {
+  const pick = () => HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)];
+  while (hearts.length < NUM_HEARTS) {
+    hearts.push([Math.random(), 1.0 + Math.random(), 0.03 + Math.random() * 0.05,
+                 Math.random() * 6.28, pick()]);
+  }
+  for (const h of hearts) {
+    h[1] -= h[2] * dt;
+    if (h[1] < 0) { h[0] = Math.random(); h[1] = 1.0; h[4] = pick(); }
+  }
+}
+
+/* ---------- Render a una grilla de caracteres ---------- */
+function renderGrid(scene, t, cols, rows, hearts, opts) {
+  opts = opts || {};
+  const { pts, flowers, babies, sparkles } = scene;
+  const n = cols * rows;
+  const chars = new Array(n).fill(" ");
+  const colors = new Uint8Array(n);
+  const zbuf = new Float64Array(n).fill(-1e9);
+
+  const viewRows = rows - 2;
+  const scale = Math.max(1.0, Math.min((viewRows - 2) / 1.45, (cols - 2) / 2.7));
+  const sxScale = scale * 2.0;
+  const cx = cols / 2;
+  // exact = igual que el script; si no, el ramo se centra verticalmente (útil en pantallas altas)
+  const cy = opts.exact ? 1 + 0.78 * scale : viewRows / 2 + 0.055 * scale;
+
+  const ang = t * SPIN_SPEED + (opts.extraAng || 0);
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const ct = Math.cos(TILT), st = Math.sin(TILT);
+
+  function plot(col, row, z, ch, color) {
+    if (row >= 0 && row < viewRows && col >= 0 && col < cols) {
+      const i = row * cols + col;
+      if (z > zbuf[i]) { zbuf[i] = z; chars[i] = ch; colors[i] = color; }
+    }
+  }
+
+  for (const h of hearts) {
+    const x = h[0], y = h[1], phase = h[3], color = h[4];
+    const v = Math.trunc((x + 0.015 * Math.sin(t * 1.2 + phase)) * cols);
+    const col = ((v % cols) + cols) % cols;
+    plot(col, Math.trunc(y * viewRows), -50, "♥", color);
+  }
+
+  for (let q = 0; q < pts.length; q++) {
+    const p = pts[q];
+    const x = p[0], y = p[1], z = p[2];
+    const xr = x * ca - z * sa;
+    const zr = x * sa + z * ca;
+    const yp = y - PIVOT_Y;
+    const yt = yp * ct - zr * st;
+    const zt = yp * st + zr * ct;
+    const f = CAM_DIST / (CAM_DIST - zt);
+    const col = Math.trunc(cx + xr * f * sxScale);
+    const row = Math.trunc(cy - yt * f * scale);
+
+    const nx = p[3], ny = p[4], nz = p[5];
+    const nxr = nx * ca - nz * sa;
+    const nzr = nx * sa + nz * ca;
+    const nyt = ny * ct - nzr * st;
+    const nzt = ny * st + nzr * ct;
+    let dot = nxr * LX + nyt * LY + nzt * LZ;
+    if (p[8] && dot < 0) dot = -dot * 0.55;
+    let b = 0.25 + 0.75 * Math.max(0.0, dot) + p[7];
+    b = Math.min(0.999, Math.max(0.0, b));
+    const pal = p[6];
+    const ch = p[9] || SHADE[Math.trunc(b * SHADE.length)];
+    plot(col, row, zt, ch, pal[Math.trunc(b * pal.length)]);
+  }
+
+  for (const fl of flowers) {
+    const x = fl.pos[0], y = fl.pos[1], z = fl.pos[2];
+    const xr = x * ca - z * sa;
+    const zr = x * sa + z * ca;
+    const yp = y - PIVOT_Y;
+    const yt = yp * ct - zr * st;
+    const zt = yp * st + zr * ct;
+    const f = CAM_DIST / (CAM_DIST - zt);
+    const fx = cx + xr * f * sxScale, fy = cy - yt * f * scale;
+    const rx = fl.R * f * sxScale, ry = fl.R * f * scale;
+    const dim = -0.4 * (1 - Math.min(1.0, Math.max(0.0, (zt + 0.6) / 1.2)));
+    const rot = fl.seed + ang * 0.7;
+    const pal = fl.pal, cpal = fl.cpal;
+    const rowA = Math.trunc(fy - ry) - 1, rowB = Math.trunc(fy + ry) + 2;
+    const colA = Math.trunc(fx - rx) - 1, colB = Math.trunc(fx + rx) + 2;
+    for (let row = rowA; row < rowB; row++) {
+      const dy = (row + 0.5 - fy) / ry;
+      for (let col = colA; col < colB; col++) {
+        const dx = (col + 0.5 - fx) / rx;
+        if (fl.kind === "disc") {
+          const s = Math.sqrt(dx * dx + dy * dy);
+          if (s > 1.0) continue;
+          if (s < 0.3) {
+            let b = 0.55 - 0.35 * dx - 0.35 * dy + dim;
+            b = Math.min(0.999, Math.max(0.0, b));
+            plot(col, row, zt + 0.06, s < 0.17 ? "@" : "o", cpal[Math.trunc(b * cpal.length)]);
+            continue;
+          }
+          const ph = Math.atan2(dy, dx);
+          const reach = 0.32 + 0.68 * Math.pow(Math.abs(Math.cos(fl.nPet * (ph + rot) / 2)), 0.7);
+          if (s > reach) continue;
+          const edge = s > reach - 0.14 ? -0.22 : 0.0;
+          let b = 0.62 - 0.22 * dx - 0.28 * dy + 0.12 * s + edge + dim;
+          b = Math.min(0.999, Math.max(0.0, b));
+          plot(col, row, zt + 0.04 * (1 - s),
+               PETAL_SHADE[Math.trunc(b * PETAL_SHADE.length)], pal[Math.trunc(b * pal.length)]);
+        } else {
+          const v = (1 - dy) / 2;
+          if (v < 0 || v > 1) continue;
+          const hw = 0.62 * Math.sin(Math.PI * 0.5 * Math.min(1.0, v * 1.5 + 0.05));
+          if (hw <= 0 || Math.abs(dx) > hw) continue;
+          const xn = dx / hw;
+          const cc = Math.cos(1.5 * Math.PI * xn);
+          if (v > 0.72 + 0.28 * cc * cc) continue;
+          const seam = (Math.abs(Math.abs(xn) - 0.33) < 0.12 && v > 0.3) ? -0.25 : 0.0;
+          let b = 0.55 - 0.3 * xn + 0.1 * v + seam + dim;
+          b = Math.min(0.999, Math.max(0.0, b));
+          plot(col, row, zt + 0.03,
+               PETAL_SHADE[Math.trunc(b * PETAL_SHADE.length)], pal[Math.trunc(b * pal.length)]);
+        }
+      }
+    }
+  }
+
+  for (const bb of babies) {
+    const x = bb[0], y = bb[1], z = bb[2], phase = bb[3];
+    const xr = x * ca - z * sa;
+    const zr = x * sa + z * ca;
+    const yp = y - PIVOT_Y;
+    const yt = yp * ct - zr * st;
+    const zt = yp * st + zr * ct;
+    const f = CAM_DIST / (CAM_DIST - zt);
+    const col = Math.trunc(cx + xr * f * sxScale);
+    const row = Math.trunc(cy - yt * f * scale);
+    const star = Math.sin(t * 2 + phase) > 0.6;
+    plot(col, row, zt + 0.02, star ? "*" : "·", star ? 231 : 255);
+  }
+
+  for (const sp of sparkles) {
+    const x = sp[0], y = sp[1], z = sp[2], phase = sp[3], speed = sp[4];
+    const xr = x * ca - z * sa;
+    const zr = x * sa + z * ca;
+    const yp = y - PIVOT_Y;
+    const yt = yp * ct - zr * st;
+    const zt = yp * st + zr * ct;
+    const f = CAM_DIST / (CAM_DIST - zt);
+    const col = Math.trunc(cx + xr * f * sxScale);
+    const row = Math.trunc(cy - yt * f * scale);
+    const tw = Math.sin(t * speed + phase);
+    if (tw > 0.85) plot(col, row, zt, "*", 231);
+    else if (tw > 0.4) plot(col, row, zt, "+", 225);
+    else if (tw > 0.0) plot(col, row, zt, "·", 218);
+  }
+
+  const mrow = rows - 2;
+  const msg = Array.from(MESSAGE);
+  const start = Math.max(0, Math.floor((cols - msg.length) / 2));
+  const shift = Math.trunc(t * 6);
+  msg.forEach((ch, i) => {
+    if (start + i < cols) {
+      chars[mrow * cols + start + i] = ch;
+      colors[mrow * cols + start + i] = MSG_COLORS[(i + shift) % MSG_COLORS.length];
+    }
+  });
+  const hint = Array.from(HINT);
+  const hstart = Math.max(0, Math.floor((cols - hint.length) / 2));
+  hint.forEach((ch, i) => {
+    if (hstart + i < cols) {
+      chars[(rows - 1) * cols + hstart + i] = ch;
+      colors[(rows - 1) * cols + hstart + i] = 238;
+    }
+  });
+
+  return { chars, colors };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { PyRandom, buildScene, renderGrid, updateHearts, xterm };
+}
+
+
+(function () {
+  if (typeof document === "undefined") return;
+
+  const stage = document.getElementById("c").parentElement;
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const scene = buildScene();
+  const hearts = [];
+  const RGB = [];
+  for (let i = 0; i < 256; i++) { const c = xterm(i); RGB.push("rgb(" + c[0] + "," + c[1] + "," + c[2] + ")"); }
+  const reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+
+  let cols = 60, rows = 40, cellW = 6, cellH = 12, dpr = 1;
+  let t = 0, extra = 0;
+
+  function layout() {
+    const W = stage.clientWidth, H = stage.clientHeight;
+    if (!W || !H) return false;
+    cellW = Math.min(9, Math.max(4.8, W / 64));
+    cellH = cellW * 2;
+    cols = Math.max(20, Math.floor(W / cellW));
+    rows = Math.max(12, Math.floor(H / cellH));
+    dpr = Math.min(3, window.devicePixelRatio || 1);
+    const cw = cols * cellW, ch = rows * cellH;
+    canvas.style.width = cw + "px";
+    canvas.style.height = ch + "px";
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+    return true;
+  }
+
+  function heart(cx, cy, s) {
+    const w = s * 0.5, h = s * 0.46;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + h * 0.95);
+    ctx.bezierCurveTo(cx - w * 1.25, cy + h * 0.1, cx - w * 0.95, cy - h * 0.95, cx, cy - h * 0.4);
+    ctx.bezierCurveTo(cx + w * 0.95, cy - h * 0.95, cx + w * 1.25, cy + h * 0.1, cx, cy + h * 0.95);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function draw() {
+    const g = renderGrid(scene, t, cols, rows, hearts, { extraAng: extra });
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cols * cellW, rows * cellH);
+    ctx.font = (Math.round(cellH * 0.86 * 10) / 10) + "px " + FONT;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    let last = -1;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const ch = g.chars[i];
+        if (ch === " ") continue;
+        const k = g.colors[i];
+        if (k !== last) { ctx.fillStyle = RGB[k]; last = k; }
+        if (ch === "♥") heart((c + 0.5) * cellW, (r + 0.58) * cellH, cellW * 1.2);
+        else ctx.fillText(ch, (c + 0.5) * cellW, (r + 0.74) * cellH);
+      }
+    }
+  }
+
+  // Arrastrar con el dedo gira el ramo.
+  let dragging = false, lastX = 0;
+  canvas.addEventListener("pointerdown", function (e) {
+    dragging = true; lastX = e.clientX;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!dragging) return;
+    extra += (e.clientX - lastX) * 0.012;
+    lastX = e.clientX;
+  });
+  ["pointerup", "pointercancel"].forEach(function (n) {
+    canvas.addEventListener(n, function () { dragging = false; });
+  });
+
+  function relayout() { if (layout()) draw(); }
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(relayout).observe(stage);
+  window.addEventListener("resize", relayout);
+
+  let prev = performance.now(), lastDraw = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden) { prev = now; return; }
+    if (now - lastDraw < 33) return;
+    lastDraw = now;
+    const dt = Math.min(0.1, Math.max(0, (now - prev) / 1000));
+    prev = now;
+    t += dt * (reduce ? 0.4 : 1);
+    updateHearts(hearts, dt);
+    draw();
+  }
+
+  if (layout()) { updateHearts(hearts, 0); draw(); }
+  requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>
